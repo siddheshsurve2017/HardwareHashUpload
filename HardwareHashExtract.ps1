@@ -66,27 +66,28 @@ try {
     Write-Log "Installing required PowerShell Package Provider (NuGet)."
     Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue
 
-    $requiredModules = @("Microsoft.Graph.Authentication", "Microsoft.Graph.DeviceManagement.Administration")
-    foreach ($module in $requiredModules) {
-        if (Get-Module -ListAvailable -Name $module) {
-            Write-Log "Module '$module' is already available."
-        } else {
-            Write-Log "Installing module '$module'..." -Color Yellow
-            Install-Module $module -Force -Confirm:$false -Scope CurrentUser
-            Write-Log "Module '$module' installed successfully." -Color Green
-        }
-    }
+    # --- Uninstall any existing versions to ensure a clean slate ---
+    Write-Log "Uninstalling any existing Graph modules to prevent conflicts..."
+    Uninstall-Module -Name Microsoft.Graph.DeviceManagement.Administration -AllVersions -Force -ErrorAction SilentlyContinue
+    Uninstall-Module -Name Microsoft.Graph.Authentication -AllVersions -Force -ErrorAction SilentlyContinue
 
+    # --- Install specific older, more compatible versions of the modules ---
+    $moduleVersion = "1.9.6"
+    Write-Log "Installing specific module version $moduleVersion for maximum compatibility." -Color Yellow
+    Install-Module -Name Microsoft.Graph.Authentication -RequiredVersion $moduleVersion -Force -Confirm:$false -Scope CurrentUser -AcceptLicense
+    Install-Module -Name Microsoft.Graph.DeviceManagement.Administration -RequiredVersion $moduleVersion -Force -Confirm:$false -Scope CurrentUser -AcceptLicense
+    Write-Log "Modules installed successfully." -Color Green
+    
     # --- Explicitly import modules by full path to ensure they are loaded ---
     Write-Log "Force-importing necessary modules into the session..."
     $moduleNames = @("Microsoft.Graph.Authentication", "Microsoft.Graph.DeviceManagement.Administration")
     foreach ($name in $moduleNames) {
-        $moduleInfo = Get-Module -ListAvailable -Name $name | Select-Object -First 1
+        $moduleInfo = Get-Module -ListAvailable -Name $name | Where-Object { $_.Version -eq $moduleVersion } | Select-Object -First 1
         if ($moduleInfo) {
-            Write-Log "Found '$name' at $($moduleInfo.Path). Importing..." -Color Cyan
+            Write-Log "Found '$name' version $($moduleInfo.Version) at $($moduleInfo.Path). Importing..." -Color Cyan
             Import-Module -Name $moduleInfo.Path -Force
         } else {
-            throw "CRITICAL: Module '$name' not found after installation."
+            throw "CRITICAL: Module '$name' version $moduleVersion not found after installation."
         }
     }
 
@@ -112,10 +113,7 @@ try {
     }
 
     Write-Log "Installing the 'Get-WindowsAutopilotInfo' script..." -Color Yellow
-    Push-Location
-    Set-Location $tempDirectory
     Install-Script -Name Get-WindowsAutopilotInfo -Force -Confirm:$false
-    Pop-Location
     Write-Log "'Get-WindowsAutopilotInfo' script installed." -Color Green
 
     Write-Log "Running script to extract hardware hash..." -Color Yellow
