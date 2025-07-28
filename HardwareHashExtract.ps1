@@ -5,13 +5,15 @@
 
 .DESCRIPTION
     This script is built to be robust and work in minimal PowerShell environments like WinRE.
+    It is secure for public hosting as it prompts for the App Secret at runtime.
     1.  Forces the use of TLS 1.2 to ensure compatibility with modern web APIs.
-    2.  Installs required PowerShell modules (Microsoft.Graph.Authentication, Microsoft.Graph.DeviceManagement.Administration).
-    3.  Installs the official 'Get-WindowsAutopilotInfo' script.
-    4.  Connects to Microsoft Graph using an Azure AD App Registration (Service Principal).
-    5.  Runs the 'Get-WindowsAutopilotInfo' script to generate the hardware hash CSV file.
-    6.  Imports the hardware hash from the CSV into your Intune tenant.
-    7.  Provides console output for each step and cleans up temporary files.
+    2.  Prompts the user to securely enter the Client Secret (App Secret).
+    3.  Installs required PowerShell modules (Microsoft.Graph.Authentication, Microsoft.Graph.DeviceManagement.Administration).
+    4.  Installs the official 'Get-WindowsAutopilotInfo' script.
+    5.  Connects to Microsoft Graph using an Azure AD App Registration (Service Principal).
+    6.  Runs the 'Get-WindowsAutopilotInfo' script to generate the hardware hash CSV file.
+    7.  Imports the hardware hash from the CSV into your Intune tenant.
+    8.  Provides console output for each step and cleans up temporary files.
 
 .PREREQUISITES
     - An active internet connection in the Windows PE/OOBE environment.
@@ -19,17 +21,17 @@
 
 .NOTES
     Author: Gemini
-    Version: 1.1 (Added TLS 1.2 enforcement for compatibility with older PowerShell versions)
+    Version: 2.0 (Prompts for secret, secure for public hosting)
 #>
 
 #region Configuration - PASTE YOUR AZURE APP DETAILS HERE
 # ------------------------------------------------------------------------------------
 # IMPORTANT: Replace the placeholder values below with the details from the
-# Azure AD App Registration you created in Step 1.
+# Azure AD App Registration you created. The App Secret is handled securely below.
 # ------------------------------------------------------------------------------------
 $tenantID = "6b1311e5-123f-49db-acdf-8847c2d00bed"         # Paste your Directory (tenant) ID here
 $appID    = "b432e847-4103-4c64-af21-8f5a71af6da5"    # Paste your Application (client) ID here
-$appSecret = "V7i8Q~VbZEl5o4mlJ4sD5lX5djze0OrIfhHMEbDJ"    # Paste your Client Secret Value here
+# The App Secret is no longer stored here for security.
 #endregion
 
 #region Script Body (Do not edit below this line)
@@ -48,20 +50,22 @@ function Write-Log {
 try {
     Write-Log "Script starting. Ensuring PowerShell environment is ready." -Color Cyan
 
-    # --- Step 1: Force TLS 1.2 Security Protocol ---
-    # This is critical for older PowerShell versions to connect to PowerShell Gallery and Microsoft Graph.
+    # --- Step 1: Securely Prompt for the Client Secret ---
+    Write-Log "Please enter the Client Secret (App Secret) for the Azure AD App." -Color Yellow
+    $appSecret = Read-Host -AsSecureString
+    Write-Log "Secret received. Continuing with script..."
+
+    # --- Step 2: Force TLS 1.2 Security Protocol ---
     Write-Log "Forcing session to use TLS 1.2 for modern API compatibility."
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    # --- Step 2: Set Execution Policy and Install Modules ---
+    # --- Step 3: Set Execution Policy and Install Modules ---
     Write-Log "Setting Execution Policy for this session."
     Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 
     Write-Log "Installing required PowerShell Package Provider (NuGet)."
-    # Install the NuGet package provider without prompting for confirmation.
     Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue
 
-    # --- Install required Microsoft Graph Modules ---
     $requiredModules = @("Microsoft.Graph.Authentication", "Microsoft.Graph.DeviceManagement.Administration")
     foreach ($module in $requiredModules) {
         if (Get-Module -ListAvailable -Name $module) {
@@ -73,17 +77,15 @@ try {
         }
     }
 
-    # --- Step 3: Connect to Microsoft Graph ---
+    # --- Step 4: Connect to Microsoft Graph ---
     Write-Log "Authenticating to Microsoft Graph..." -Color Yellow
-    # Convert the plain text secret to a secure string for the credential object
-    $secureAppSecret = ConvertTo-SecureString -String $appSecret -AsPlainText -Force
-    $credential = New-Object System.Management.Automation.PSCredential -ArgumentList $appID, $secureAppSecret
+    # Note: We use the SecureString directly now, no conversion needed.
+    $credential = New-Object System.Management.Automation.PSCredential -ArgumentList $appID, $appSecret
 
-    # Connect using the service principal credentials
     Connect-MgGraph -TenantId $tenantID -Credential $credential
     Write-Log "Successfully connected to Microsoft Graph." -Color Green
 
-    # --- Step 4: Get the Autopilot Hardware Hash ---
+    # --- Step 5: Get the Autopilot Hardware Hash ---
     $tempDirectory = "C:\TempHWID"
     Write-Log "Creating temporary directory: $tempDirectory"
     if (-not (Test-Path -Path $tempDirectory)) {
@@ -91,7 +93,6 @@ try {
     }
 
     Write-Log "Installing the 'Get-WindowsAutopilotInfo' script..." -Color Yellow
-    # Save the current directory, change to temp, and then change back.
     Push-Location
     Set-Location $tempDirectory
     Install-Script -Name Get-WindowsAutopilotInfo -Force -Confirm:$false -AllowClobber
@@ -100,7 +101,6 @@ try {
 
     Write-Log "Running script to extract hardware hash..." -Color Yellow
     $hashCsvPath = "$tempDirectory\autopilot-hash.csv"
-    # The script installs to a path that might not be in the default $env:PSModulePath for the session
     $autopilotScriptPath = "$env:USERPROFILE\Documents\WindowsPowerShell\Scripts\Get-WindowsAutopilotInfo.ps1"
     
     if (-not (Test-Path -Path $autopilotScriptPath)) {
@@ -114,21 +114,18 @@ try {
     }
     Write-Log "Hardware hash successfully extracted to: $hashCsvPath" -Color Green
 
-    # --- Step 5: Import the Hash into Intune ---
+    # --- Step 6: Import the Hash into Intune ---
     Write-Log "Reading hash file and preparing to upload to Intune..." -Color Yellow
     $devices = Import-Csv -Path $hashCsvPath
     
     foreach ($device in $devices) {
         $serialNumber = $device.'Serial Number'
         Write-Log "Importing device with Serial Number: $serialNumber"
-        
-        # Using the newer Import-AutopilotDeviceIdentity cmdlet from the Microsoft.Graph.DeviceManagement.Administration module
         Import-AutopilotDeviceIdentity -SerialNumber $serialNumber -HardwareIdentifier $device.'Hardware Hash' -ProductKey $device.'Product Key'
-        
         Write-Log "Successfully submitted import request for device: $serialNumber" -Color Green
     }
 
-    # --- Step 6: Cleanup ---
+    # --- Step 7: Cleanup ---
     Write-Log "Cleaning up temporary files and directory..."
     Remove-Item -Path $tempDirectory -Recurse -Force
     Write-Log "Cleanup complete."
@@ -140,7 +137,6 @@ try {
     # --- Error Handling ---
     Write-Log "AN ERROR OCCURRED:" -Color Red
     Write-Log $_.Exception.Message -Color Red
-    # Pause the script so the error can be read
     Read-Host "Press Enter to exit..."
 }
 #endregion
