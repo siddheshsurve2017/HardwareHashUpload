@@ -77,6 +77,11 @@ try {
         }
     }
 
+    # --- Explicitly import modules to ensure cmdlets are available ---
+    Write-Log "Importing necessary modules into the session..."
+    Import-Module Microsoft.Graph.Authentication -Force
+    Import-Module Microsoft.Graph.DeviceManagement.Administration -Force
+
     # --- Step 4: Connect to Microsoft Graph ---
     Write-Log "Authenticating to Microsoft Graph..." -Color Yellow
     # Note: We use the SecureString directly now, no conversion needed.
