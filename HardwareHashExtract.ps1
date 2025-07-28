@@ -77,10 +77,18 @@ try {
         }
     }
 
-    # --- Explicitly import modules to ensure cmdlets are available ---
-    Write-Log "Importing necessary modules into the session..."
-    Import-Module Microsoft.Graph.Authentication -Force
-    Import-Module Microsoft.Graph.DeviceManagement.Administration -Force
+    # --- Explicitly import modules by full path to ensure they are loaded ---
+    Write-Log "Force-importing necessary modules into the session..."
+    $moduleNames = @("Microsoft.Graph.Authentication", "Microsoft.Graph.DeviceManagement.Administration")
+    foreach ($name in $moduleNames) {
+        $moduleInfo = Get-Module -ListAvailable -Name $name | Select-Object -First 1
+        if ($moduleInfo) {
+            Write-Log "Found '$name' at $($moduleInfo.Path). Importing..." -Color Cyan
+            Import-Module -Name $moduleInfo.Path -Force
+        } else {
+            throw "CRITICAL: Module '$name' not found after installation."
+        }
+    }
 
     # --- Verify that the critical command is now available ---
     Write-Log "Verifying cmdlet availability..."
@@ -91,7 +99,6 @@ try {
 
     # --- Step 4: Connect to Microsoft Graph ---
     Write-Log "Authenticating to Microsoft Graph..." -Color Yellow
-    # Note: We use the SecureString directly now, no conversion needed.
     $credential = New-Object System.Management.Automation.PSCredential -ArgumentList $appID, $appSecret
 
     Connect-MgGraph -TenantId $tenantID -Credential $credential
@@ -107,7 +114,6 @@ try {
     Write-Log "Installing the 'Get-WindowsAutopilotInfo' script..." -Color Yellow
     Push-Location
     Set-Location $tempDirectory
-    # Removed -AllowClobber for compatibility with older PowerShell versions. -Force is sufficient.
     Install-Script -Name Get-WindowsAutopilotInfo -Force -Confirm:$false
     Pop-Location
     Write-Log "'Get-WindowsAutopilotInfo' script installed." -Color Green
@@ -117,7 +123,6 @@ try {
     $autopilotScriptPath = "$env:USERPROFILE\Documents\WindowsPowerShell\Scripts\Get-WindowsAutopilotInfo.ps1"
     
     if (-not (Test-Path -Path $autopilotScriptPath)) {
-        # If not found in the default user path, check the AllUsers path
         $autopilotScriptPath = "$env:ProgramFiles\WindowsPowerShell\Scripts\Get-WindowsAutopilotInfo.ps1"
         if (-not (Test-Path -Path $autopilotScriptPath)){
              throw "Failed to find the Get-WindowsAutopilotInfo.ps1 script after installation."
