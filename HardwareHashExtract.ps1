@@ -82,6 +82,13 @@ try {
     Import-Module Microsoft.Graph.Authentication -Force
     Import-Module Microsoft.Graph.DeviceManagement.Administration -Force
 
+    # --- Verify that the critical command is now available ---
+    Write-Log "Verifying cmdlet availability..."
+    if (-not (Get-Command -Name Import-AutopilotDeviceIdentity -ErrorAction SilentlyContinue)) {
+        throw "CRITICAL: The 'Import-AutopilotDeviceIdentity' cmdlet is still not available after module installation and import. Cannot proceed."
+    }
+    Write-Log "Cmdlet verified successfully." -Color Green
+
     # --- Step 4: Connect to Microsoft Graph ---
     Write-Log "Authenticating to Microsoft Graph..." -Color Yellow
     # Note: We use the SecureString directly now, no conversion needed.
