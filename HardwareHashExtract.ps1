@@ -72,7 +72,7 @@ try {
             Write-Log "Module '$module' is already available."
         } else {
             Write-Log "Installing module '$module'..." -Color Yellow
-            Install-Module $module -Force -Confirm:$false -AllowClobber -Scope CurrentUser
+            Install-Module $module -Force -Confirm:$false -Scope CurrentUser
             Write-Log "Module '$module' installed successfully." -Color Green
         }
     }
@@ -95,7 +95,8 @@ try {
     Write-Log "Installing the 'Get-WindowsAutopilotInfo' script..." -Color Yellow
     Push-Location
     Set-Location $tempDirectory
-    Install-Script -Name Get-WindowsAutopilotInfo -Force -Confirm:$false -AllowClobber
+    # Removed -AllowClobber for compatibility with older PowerShell versions. -Force is sufficient.
+    Install-Script -Name Get-WindowsAutopilotInfo -Force -Confirm:$false
     Pop-Location
     Write-Log "'Get-WindowsAutopilotInfo' script installed." -Color Green
 
@@ -104,7 +105,11 @@ try {
     $autopilotScriptPath = "$env:USERPROFILE\Documents\WindowsPowerShell\Scripts\Get-WindowsAutopilotInfo.ps1"
     
     if (-not (Test-Path -Path $autopilotScriptPath)) {
-        throw "Failed to find the Get-WindowsAutopilotInfo.ps1 script after installation."
+        # If not found in the default user path, check the AllUsers path
+        $autopilotScriptPath = "$env:ProgramFiles\WindowsPowerShell\Scripts\Get-WindowsAutopilotInfo.ps1"
+        if (-not (Test-Path -Path $autopilotScriptPath)){
+             throw "Failed to find the Get-WindowsAutopilotInfo.ps1 script after installation."
+        }
     }
 
     & $autopilotScriptPath -OutputFile $hashCsvPath -Append
