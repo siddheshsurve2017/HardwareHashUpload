@@ -52,60 +52,23 @@ try {
 
     # --- Step 1: Securely Prompt for the Client Secret ---
     Write-Log "Please enter the Client Secret (App Secret) for the Azure AD App." -Color Yellow
-    $appSecret = Read-Host -AsSecureString
+    # We need the plain text secret for the web request body, so we can't use -AsSecureString here.
+    # The script is running in a temporary, non-persistent environment, making this an acceptable risk.
+    $appSecret = Read-Host
     Write-Log "Secret received. Continuing with script..."
 
     # --- Step 2: Force TLS 1.2 Security Protocol ---
     Write-Log "Forcing session to use TLS 1.2 for modern API compatibility."
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    # --- Step 3: Set Execution Policy and Install Modules ---
+    # --- Step 3: Set Execution Policy and Install Prereqs ---
     Write-Log "Setting Execution Policy for this session."
     Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 
     Write-Log "Installing required PowerShell Package Provider (NuGet)."
     Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue
-
-    # --- Uninstall any existing versions to ensure a clean slate ---
-    Write-Log "Uninstalling any existing Graph modules to prevent conflicts..."
-    Uninstall-Module -Name Microsoft.Graph.DeviceManagement.Administration -AllVersions -Force -ErrorAction SilentlyContinue
-    Uninstall-Module -Name Microsoft.Graph.Authentication -AllVersions -Force -ErrorAction SilentlyContinue
-
-    # --- Install specific older, more compatible versions of the modules ---
-    $moduleVersion = "1.9.6"
-    Write-Log "Installing specific module version $moduleVersion for maximum compatibility." -Color Yellow
-    Install-Module -Name Microsoft.Graph.Authentication -RequiredVersion $moduleVersion -Force -Confirm:$false -Scope CurrentUser -AcceptLicense
-    Install-Module -Name Microsoft.Graph.DeviceManagement.Administration -RequiredVersion $moduleVersion -Force -Confirm:$false -Scope CurrentUser -AcceptLicense
-    Write-Log "Modules installed successfully." -Color Green
     
-    # --- Explicitly import modules by full path to ensure they are loaded ---
-    Write-Log "Force-importing necessary modules into the session..."
-    $moduleNames = @("Microsoft.Graph.Authentication", "Microsoft.Graph.DeviceManagement.Administration")
-    foreach ($name in $moduleNames) {
-        $moduleInfo = Get-Module -ListAvailable -Name $name | Where-Object { $_.Version -eq $moduleVersion } | Select-Object -First 1
-        if ($moduleInfo) {
-            Write-Log "Found '$name' version $($moduleInfo.Version) at $($moduleInfo.Path). Importing..." -Color Cyan
-            Import-Module -Name $moduleInfo.Path -Force
-        } else {
-            throw "CRITICAL: Module '$name' version $moduleVersion not found after installation."
-        }
-    }
-
-    # --- Verify that the critical command is now available ---
-    Write-Log "Verifying cmdlet availability..."
-    if (-not (Get-Command -Name Import-AutopilotDeviceIdentity -ErrorAction SilentlyContinue)) {
-        throw "CRITICAL: The 'Import-AutopilotDeviceIdentity' cmdlet is still not available after module installation and import. Cannot proceed."
-    }
-    Write-Log "Cmdlet verified successfully." -Color Green
-
-    # --- Step 4: Connect to Microsoft Graph ---
-    Write-Log "Authenticating to Microsoft Graph..." -Color Yellow
-    $credential = New-Object System.Management.Automation.PSCredential -ArgumentList $appID, $appSecret
-
-    Connect-MgGraph -TenantId $tenantID -Credential $credential
-    Write-Log "Successfully connected to Microsoft Graph." -Color Green
-
-    # --- Step 5: Get the Autopilot Hardware Hash ---
+    # --- Step 4: Get the Autopilot Hardware Hash ---
     $tempDirectory = "C:\TempHWID"
     Write-Log "Creating temporary directory: $tempDirectory"
     if (-not (Test-Path -Path $tempDirectory)) {
@@ -132,18 +95,50 @@ try {
     if (-not (Test-Path -Path $hashCsvPath)) {
         throw "Hardware hash CSV file was not created. Cannot proceed."
     }
-    Write-Log "Hardware hash successfully extracted to: $hashCsvPath" -Color Green
+    $deviceInfo = Import-Csv -Path $hashCsvPath | Select-Object -First 1
+    Write-Log "Hardware hash successfully extracted for Serial Number: $($deviceInfo.'Serial Number')" -Color Green
 
-    # --- Step 6: Import the Hash into Intune ---
-    Write-Log "Reading hash file and preparing to upload to Intune..." -Color Yellow
-    $devices = Import-Csv -Path $hashCsvPath
-    
-    foreach ($device in $devices) {
-        $serialNumber = $device.'Serial Number'
-        Write-Log "Importing device with Serial Number: $serialNumber"
-        Import-AutopilotDeviceIdentity -SerialNumber $serialNumber -HardwareIdentifier $device.'Hardware Hash' -ProductKey $device.'Product Key'
-        Write-Log "Successfully submitted import request for device: $serialNumber" -Color Green
+    # --- Step 5: Authenticate to Microsoft Graph ---
+    Write-Log "Authenticating to Microsoft Graph to get access token..." -Color Yellow
+    $authUrl = "https://login.microsoftonline.com/$tenantID/oauth2/v2.0/token"
+    $authBody = @{
+        client_id     = $appID
+        client_secret = $appSecret
+        scope         = "https://graph.microsoft.com/.default"
+        grant_type    = "client_credentials"
     }
+
+    $authResponse = Invoke-RestMethod -Method Post -Uri $authUrl -Body $authBody -ErrorAction Stop
+    $accessToken = $authResponse.access_token
+    Write-Log "Successfully obtained Graph API Access Token." -Color Green
+
+    # --- Step 6: Import the Hash into Intune via REST API ---
+    Write-Log "Preparing to upload hash to Intune via REST API..." -Color Yellow
+    $apiUrl = "https://graph.microsoft.com/beta/deviceManagement/importedWindowsAutopilotDeviceIdentities"
+    
+    $headers = @{
+        "Authorization" = "Bearer $accessToken"
+        "Content-Type"  = "application/json"
+    }
+
+    $jsonBody = @{
+        "@odata.type"          = "#microsoft.graph.importedWindowsAutopilotDeviceIdentity"
+        "groupTag"             = ""
+        "serialNumber"         = $deviceInfo.'Serial Number'
+        "productKey"           = $deviceInfo.'Product Key'
+        "hardwareIdentifier"   = $deviceInfo.'Hardware Hash'
+        "state"                = @{
+            "@odata.type" = "microsoft.graph.importedWindowsAutopilotDeviceIdentityState"
+            "deviceImportStatus" = "pending"
+            "deviceRegistrationId" = ""
+            "deviceErrorCode" = 0
+            "deviceErrorName" = ""
+        }
+    } | ConvertTo-Json -Depth 5
+
+    Write-Log "Uploading device with Serial Number: $($deviceInfo.'Serial Number')"
+    Invoke-RestMethod -Method Post -Uri $apiUrl -Headers $headers -Body $jsonBody -ErrorAction Stop
+    Write-Log "Successfully submitted import request for device: $($deviceInfo.'Serial Number')" -Color Green
 
     # --- Step 7: Cleanup ---
     Write-Log "Cleaning up temporary files and directory..."
@@ -157,6 +152,12 @@ try {
     # --- Error Handling ---
     Write-Log "AN ERROR OCCURRED:" -Color Red
     Write-Log $_.Exception.Message -Color Red
+    if ($_.Exception.Response) {
+        $errorResponse = $_.Exception.Response.GetResponseStream()
+        $streamReader = New-Object System.IO.StreamReader($errorResponse)
+        $errorBody = $streamReader.ReadToEnd()
+        Write-Log "Error Details: $errorBody" -Color Red
+    }
     Read-Host "Press Enter to exit..."
 }
 #endregion
